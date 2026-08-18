@@ -304,3 +304,20 @@ export function parseTSVData(tsvContent: string): {
     transactions
   };
 }
+
+import defaultDb from './db.json';
+
+export function getDemoData(): { companies: Company[]; contacts: Contact[]; transactions: Transaction[]; customFields: any[] } {
+  return {
+    companies: (defaultDb.companies || []) as Company[],
+    contacts: (defaultDb.contacts || []) as Contact[],
+    transactions: (defaultDb.transactions || []) as Transaction[],
+    customFields: ((defaultDb as any).customFields || [
+      { id: 'f_site', name: 'Website', type: 'string', target: 'company' },
+      { id: 'f_linkedin', name: 'LinkedIn', type: 'string', target: 'company' },
+      { id: 'f_linkedin_p', name: 'LinkedIn Pessoal', type: 'string', target: 'contact' },
+      { id: 'f_interesse', name: 'Principais Interesses', type: 'select', target: 'company', options: ['Vendas', 'Parcerias', 'Investimentos', 'Contratação', 'Tecnologia', 'Networking'] }
+    ])
+  };
+}
+

@@ -98,18 +98,31 @@ export default function CompanyProfile({
           description: company.description
         })
       });
-      const data = await res.json();
-      if (data.logoUrl) {
-        const updated = { ...company, logoUrl: data.logoUrl };
-        onUpdateCompany(updated);
-        setEditedCompany(updated);
-        setLogoFeedback(data.companyIdentified ? `Logo localizada para ${data.companyIdentified} (${data.domain || 'site oficial'})!` : 'Logo obtida com sucesso por IA!');
-        setTimeout(() => setLogoFeedback(null), 4500);
-      } else {
-        setLogoFeedback('Não foi possível encontrar a logo automaticamente.');
+      if (res.ok) {
+        const data = await res.json();
+        if (data.logoUrl) {
+          const updated = { ...company, logoUrl: data.logoUrl };
+          onUpdateCompany(updated);
+          setEditedCompany(updated);
+          setLogoFeedback(data.companyIdentified ? `Logo localizada para ${data.companyIdentified} (${data.domain || 'site oficial'})!` : 'Logo obtida com sucesso por IA!');
+          setTimeout(() => setLogoFeedback(null), 4500);
+          return;
+        }
       }
+      throw new Error('Fallback to client domain search');
     } catch (err) {
-      setLogoFeedback('Erro ao realizar busca de logo.');
+      // Fallback domain derivation for client-only / static Vercel mode
+      const cleanName = company.name.toLowerCase()
+        .replace(/[^a-z0-9]/g, '')
+        .replace(/(ltda|sa|eireli|me|associados|consultoria|grupo)/g, '')
+        .trim();
+      const domain = cleanName ? `${cleanName}.com.br` : 'empresa.com.br';
+      const fallbackLogo = `https://unavatar.io/${domain}?fallback=https://logo.clearbit.com/${domain}`;
+      const updated = { ...company, logoUrl: fallbackLogo };
+      onUpdateCompany(updated);
+      setEditedCompany(updated);
+      setLogoFeedback(`Logo configurada via domínio ${domain}`);
+      setTimeout(() => setLogoFeedback(null), 4000);
     } finally {
       setIsFindingLogo(false);
     }

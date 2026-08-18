@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Company, Contact, Transaction } from '../types';
 import { motion, AnimatePresence } from 'motion/react';
 import * as XLSX from 'xlsx';
+import { loadLocalDatabase, saveLocalDatabase, DEFAULT_CUSTOM_FIELDS } from '../utils/storage';
 import { 
   Upload, FileText, Clipboard, Sparkles, Database, RefreshCw, 
   CheckCircle2, Trash2, AlertTriangle, ChevronRight, Eye, BookOpen, 
@@ -9,14 +10,16 @@ import {
 } from 'lucide-react';
 
 interface MailingImporterProps {
-  onImportComplete: () => void;
+  onImportComplete: (importedData?: any) => void;
   onLoadDemoData: () => Promise<void>;
+  onClearAllData?: () => void;
   existingCompaniesCount: number;
 }
 
 export default function MailingImporter({ 
   onImportComplete, 
   onLoadDemoData,
+  onClearAllData,
   existingCompaniesCount 
 }: MailingImporterProps) {
   // Mode selection: 'file' | 'paste' | 'demo'
@@ -747,29 +750,91 @@ export default function MailingImporter({
         setParsingProgress(randomStatus);
       }, 3500);
 
-      const res = await fetch('/api/ai/parse-mailing', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: textToAnalyze })
-      });
+      try {
+        const res = await fetch('/api/ai/parse-mailing', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: textToAnalyze })
+        });
 
-      clearInterval(interval);
+        clearInterval(interval);
 
-      if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.error || 'Falha na resposta do assistente Gemini.');
+        if (res.ok) {
+          const data = await res.json();
+          if (data.companies && data.companies.length > 0) {
+            setParsedCompanies(data.companies || []);
+            setParsedContacts(data.contacts || []);
+            setParsedTransactions(data.transactions || []);
+            setParsingProgress(`IA Gemini concluiu o mapeamento! Estruturou ${data.companies.length} empresas, ${data.contacts?.length || 0} contatos e ${data.transactions?.length || 0} registros de eventos.`);
+            return;
+          }
+        }
+      } catch (apiErr) {
+        clearInterval(interval);
+        console.log('Using local heuristic parser fallback for pasted text');
       }
 
-      const data = await res.json();
+      // Fallback local heuristic line-by-line parser
+      const lines = textToAnalyze.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+      const fallbackComps: any[] = [];
+      const fallbackContacts: any[] = [];
+      const fallbackTxs: any[] = [];
 
-      setParsedCompanies(data.companies || []);
-      setParsedContacts(data.contacts || []);
-      setParsedTransactions(data.transactions || []);
-      
-      setParsingProgress(`IA Gemini concluiu o mapeamento! Estruturou com precisão ${data.companies?.length || 0} empresas, ${data.contacts?.length || 0} contatos e ${data.transactions?.length || 0} registros de eventos.`);
-      
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        if (line.length < 3) continue;
+        
+        // Check for tab, comma or semicolon
+        let parts = line.includes('\t') ? line.split('\t') : (line.includes(';') ? line.split(';') : line.split(/,\s*/));
+        parts = parts.map(p => p.trim());
+
+        const nameCandidate = parts[0] || `Empresa ${i + 1}`;
+        const secondCandidate = parts[1] || '';
+        const thirdCandidate = parts[2] || '';
+
+        // Extract possible email
+        const emailMatch = line.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
+        const email = emailMatch ? emailMatch[0] : '';
+        
+        // Extract possible vidas
+        const vidasMatch = line.match(/\b([1-9][0-9]{0,4})\s*(vidas|colaboradores|funcionários|func|empregados)?\b/i);
+        const vidas = vidasMatch ? parseInt(vidasMatch[1], 10) : 0;
+
+        fallbackComps.push({
+          name: nameCandidate,
+          segment: secondCandidate && !emailMatch ? secondCandidate : 'Serviços & Negócios',
+          description: `Participante identificado no mailing do evento.`,
+          activity: thirdCandidate || 'Atividades corporativas e conexões comerciais.',
+          vidas: vidas,
+          location: 'Fortaleza, CE'
+        });
+
+        if (secondCandidate && (email || parts.length > 2)) {
+          fallbackContacts.push({
+            name: secondCandidate.includes('@') ? nameCandidate : secondCandidate,
+            email: email,
+            phone: '',
+            companyName: nameCandidate
+          });
+        }
+
+        fallbackTxs.push({
+          companyName: nameCandidate,
+          contactName: secondCandidate || nameCandidate,
+          contactEmail: email,
+          eventName: 'Evento RampUp',
+          value: 0,
+          paymentStatus: 'Aprovado'
+        });
+      }
+
+      setParsedCompanies(fallbackComps);
+      setParsedContacts(fallbackContacts);
+      setParsedTransactions(fallbackTxs);
+      setParsingProgress(`Estruturados ${fallbackComps.length} empresas a partir do texto.`);
+
     } catch (err: any) {
-      setErrorMsg(err.message || 'Falha ao processar dados com Inteligência Artificial.');
+      setErrorMsg(err.message || 'Falha ao processar dados.');
     } finally {
       setIsParsing(false);
     }
@@ -786,26 +851,116 @@ export default function MailingImporter({
       setIsSaving(true);
       setErrorMsg('');
 
-      const res = await fetch('/api/mailing/import', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          companies: parsedCompanies,
-          contacts: parsedContacts,
-          transactions: parsedTransactions,
-          overwrite: overwriteStrategy
-        })
+      // Normalize records
+      const cleanCompanies: Company[] = parsedCompanies.map((c, i) => ({
+        id: c.id || `comp_${(c.name || `empresa_${i}`).toLowerCase().replace(/[^a-z0-9]/g, '_')}_${Date.now()}_${i}`,
+        name: c.name || 'Empresa Sem Nome',
+        segment: c.segment || 'Outros',
+        description: c.description || '',
+        activity: c.activity || '',
+        vidas: typeof c.vidas === 'number' ? c.vidas : (parseInt(c.vidas, 10) || 0),
+        location: c.location || 'Fortaleza, CE',
+        logoUrl: c.logoUrl,
+        faturamentoEst: c.faturamentoEst,
+        folhaEst: c.folhaEst,
+        mediaSetorEst: c.mediaSetorEst,
+        futebol: c.futebol,
+        areaAtuacao: c.areaAtuacao,
+        politica: c.politica,
+        musica: c.musica,
+        customFields: c.customFields || {}
+      }));
+
+      const cleanContacts: Contact[] = parsedContacts.map((ct, i) => {
+        const comp = cleanCompanies.find(c => c.name.toLowerCase() === (ct.companyName || '').toLowerCase());
+        return {
+          id: ct.id || `ct_${Date.now()}_${i}`,
+          name: ct.name || 'Contato',
+          email: ct.email || '',
+          phone: ct.phone || '',
+          companyId: comp ? comp.id : (ct.companyId || (cleanCompanies[0]?.id || '')),
+          futebol: ct.futebol,
+          areaAtuacao: ct.areaAtuacao,
+          politica: ct.politica,
+          musica: ct.musica,
+          customFields: ct.customFields || {}
+        };
       });
 
-      if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.error || 'Falha ao salvar dados de importação.');
+      const cleanTransactions: Transaction[] = parsedTransactions.map((tx, i) => {
+        const comp = cleanCompanies.find(c => c.name.toLowerCase() === (tx.companyName || '').toLowerCase());
+        return {
+          id: tx.id || `tx_${Date.now()}_${i}`,
+          companyId: comp ? comp.id : (tx.companyId || (cleanCompanies[0]?.id || '')),
+          contactName: tx.contactName || '',
+          contactEmail: tx.contactEmail || '',
+          eventName: tx.eventName || 'Evento RampUp',
+          eventDate: tx.eventDate || new Date().toISOString().split('T')[0],
+          eventLocation: tx.eventLocation || 'Fortaleza, CE',
+          ticketType: tx.ticketType || 'Ingresso',
+          value: typeof tx.value === 'number' ? tx.value : 0,
+          paymentStatus: tx.paymentStatus || 'Aprovado',
+          purchaseDate: tx.purchaseDate || new Date().toISOString().split('T')[0]
+        };
+      });
+
+      // Try server save if running fullstack Express
+      try {
+        await fetch('/api/mailing/import', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            companies: cleanCompanies,
+            contacts: cleanContacts,
+            transactions: cleanTransactions,
+            overwrite: overwriteStrategy
+          })
+        });
+      } catch (apiErr) {
+        console.log('Server API not reachable, persisting directly to local storage');
       }
+
+      // Sync and persist locally in browser (works seamlessly on Vercel)
+      const existing = loadLocalDatabase() || { 
+        companies: [], 
+        contacts: [], 
+        transactions: [], 
+        customFields: DEFAULT_CUSTOM_FIELDS 
+      };
+
+      let newCompanies: Company[];
+      let newContacts: Contact[];
+      let newTransactions: Transaction[];
+
+      if (overwriteStrategy) {
+        newCompanies = cleanCompanies;
+        newContacts = cleanContacts;
+        newTransactions = cleanTransactions;
+      } else {
+        const compMap = new Map(existing.companies.map(c => [c.id, c]));
+        cleanCompanies.forEach(c => compMap.set(c.id, c));
+        newCompanies = Array.from(compMap.values());
+
+        const contactMap = new Map(existing.contacts.map(c => [c.id, c]));
+        cleanContacts.forEach(c => contactMap.set(c.id, c));
+        newContacts = Array.from(contactMap.values());
+
+        newTransactions = [...cleanTransactions, ...existing.transactions];
+      }
+
+      const consolidatedState = {
+        companies: newCompanies,
+        contacts: newContacts,
+        transactions: newTransactions,
+        customFields: existing.customFields || DEFAULT_CUSTOM_FIELDS
+      };
+
+      saveLocalDatabase(consolidatedState);
 
       setSaveSuccess(true);
       setTimeout(() => {
-        onImportComplete();
-      }, 2000);
+        onImportComplete(consolidatedState);
+      }, 1500);
 
     } catch (err: any) {
       setErrorMsg(err.message || 'Falha ao consolidar importação no banco de dados.');
@@ -844,16 +999,32 @@ export default function MailingImporter({
             Alimente seu CRM de Inteligência Relacional
           </h2>
           <p className="text-sm text-slate-500 dark:text-slate-400 leading-relaxed">
-            Para iniciar as análises de conexões B2B da rodada Rampup, carregue o banco de dados. Você pode subir uma planilha CSV/TSV, colar linhas copiadas do Excel, relatórios de PDF ou ativar nossa Inteligência Artificial para estruturar dados soltos.
+            Para iniciar as análises de conexões B2B da rodada Rampup, carregue o banco de dados. Você pode subir uma planilha Excel/CSV, colar linhas de participantes ou carregar a base de demonstração.
           </p>
         </div>
 
         {existingCompaniesCount > 0 && (
-          <div className="pt-2">
+          <div className="pt-2 flex flex-wrap items-center justify-center gap-3">
             <span className="inline-flex items-center bg-emerald-100 dark:bg-emerald-950/60 border border-emerald-200 dark:border-emerald-900/40 text-emerald-700 dark:text-emerald-400 text-xs font-bold px-3.5 py-1.5 rounded-full shadow-3xs">
               <CheckCircle2 className="h-4 w-4 mr-1.5 shrink-0" />
-              Banco ativo atualmente com {existingCompaniesCount} empresas cadastradas
+              Banco ativo com {existingCompaniesCount} empresas cadastradas
             </span>
+
+            {onClearAllData && (
+              <button
+                type="button"
+                onClick={() => {
+                  if (confirm('Deseja resetar e limpar o mailing atual para subir um novo evento do zero?')) {
+                    onClearAllData();
+                    handleClear();
+                  }
+                }}
+                className="inline-flex items-center space-x-1.5 bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/40 dark:hover:bg-rose-900/50 text-rose-700 dark:text-rose-300 font-bold text-xs px-3.5 py-1.5 rounded-full border border-rose-200 dark:border-rose-900/40 cursor-pointer transition-colors shadow-3xs"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                <span>Limpar Mailing & Carregar Novo Evento</span>
+              </button>
+            )}
           </div>
         )}
       </div>

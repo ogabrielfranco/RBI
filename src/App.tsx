@@ -10,10 +10,12 @@ import MailingImporter from './components/MailingImporter';
 import AgendaPanorama from './components/AgendaPanorama';
 import { classifyCompanySize, calculateFinancialAnalysis, getSimilarSegmentGroup, classifyRampupProfile } from './utils/strategicHelpers';
 import { exportCompaniesToCSV, exportCompaniesToPDF, exportFullBaseToExcel, exportSingleCompanyToPDF } from './utils/exportHelpers';
+import { loadLocalDatabase, saveLocalDatabase, clearLocalDatabase, DEFAULT_CUSTOM_FIELDS } from './utils/storage';
+import { getDemoData } from './data/seedData';
 import { 
   Building2, Users, LayoutDashboard, Network, Settings, Plus, Search, 
   Trash2, X, Filter, Sparkles, TrendingUp, ChevronRight, SlidersHorizontal,
-  Sun, Moon, Zap, Upload, Calendar
+  Sun, Moon, Zap, Upload, Calendar, RefreshCw
 } from 'lucide-react';
 
 export default function App() {
@@ -43,7 +45,7 @@ export default function App() {
   const [companies, setCompanies] = useState<Company[]>([]);
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
-  const [customFields, setCustomFields] = useState<CustomFieldConfig[]>([]);
+  const [customFields, setCustomFields] = useState<CustomFieldConfig[]>(DEFAULT_CUSTOM_FIELDS);
 
   // AI Analysis Execution Gating State
   const [isAnalysisExecuted, setIsAnalysisExecuted] = useState<boolean>(() => {
@@ -83,23 +85,60 @@ export default function App() {
   const [musicaFilter, setMusicaFilter] = useState('');
   const [rampupFilter, setRampupFilter] = useState('');
 
-  // Fetch full DB on startup
+  // Fetch full DB on startup (Dual local + server sync for Vercel)
   const fetchDB = async () => {
     try {
       setIsLoading(true);
-      const res = await fetch('/api/db');
-      if (!res.ok) throw new Error('Erro ao buscar dados do CRM.');
-      const data = await res.json();
-      setCompanies(data.companies || []);
-      setContacts(data.contacts || []);
-      setTransactions(data.transactions || []);
-      setCustomFields(data.customFields || []);
-      if (!data.companies || data.companies.length === 0) {
-        setActiveTab('import-mailing');
-        resetAnalysisRun();
+      setErrorMsg('');
+
+      // 1. Check local storage first
+      const localData = loadLocalDatabase();
+      if (localData && localData.companies.length > 0) {
+        setCompanies(localData.companies);
+        setContacts(localData.contacts);
+        setTransactions(localData.transactions);
+        setCustomFields(localData.customFields);
+      }
+
+      // 2. Try server sync if running fullstack Express
+      try {
+        const res = await fetch('/api/db');
+        if (res.ok) {
+          const data = await res.json();
+          if (data.companies && data.companies.length > 0) {
+            setCompanies(data.companies);
+            setContacts(data.contacts || []);
+            setTransactions(data.transactions || []);
+            setCustomFields(data.customFields || DEFAULT_CUSTOM_FIELDS);
+            saveLocalDatabase({
+              companies: data.companies,
+              contacts: data.contacts || [],
+              transactions: data.transactions || [],
+              customFields: data.customFields || DEFAULT_CUSTOM_FIELDS
+            });
+            return;
+          }
+        }
+      } catch (netErr) {
+        console.log('Static / Vercel mode active - using local browser storage');
+      }
+
+      // 3. If no data exists anywhere, start with demo data or route to mailing import
+      if (!localData || localData.companies.length === 0) {
+        const demo = getDemoData();
+        if (demo && demo.companies.length > 0) {
+          setCompanies(demo.companies);
+          setContacts(demo.contacts);
+          setTransactions(demo.transactions);
+          setCustomFields(demo.customFields || DEFAULT_CUSTOM_FIELDS);
+          saveLocalDatabase(demo);
+        } else {
+          setActiveTab('import-mailing');
+          resetAnalysisRun();
+        }
       }
     } catch (err: any) {
-      setErrorMsg(err.message || 'Falha ao carregar conexões.');
+      console.warn('DB initialization notice:', err);
     } finally {
       setIsLoading(false);
     }
@@ -109,25 +148,26 @@ export default function App() {
     fetchDB();
   }, []);
 
-  // --- CRUD FUNCTIONS ---
+  // --- CRUD FUNCTIONS (Dual local + server) ---
 
   // Create Company
   const handleCreateCompany = async (newComp: Company) => {
     try {
-      const res = await fetch('/api/companies', {
+      const savedComp = { ...newComp, id: newComp.id || `comp_${Date.now()}` };
+      const updatedCompanies = [savedComp, ...companies];
+      setCompanies(updatedCompanies);
+      saveLocalDatabase({ companies: updatedCompanies, contacts, transactions, customFields });
+      
+      setIsFormOpen(false);
+      setSelectedCompany(savedComp);
+      setActiveTab('companies');
+
+      // Best effort backend sync
+      fetch('/api/companies', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newComp)
-      });
-      if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.error || 'Erro ao salvar empresa.');
-      }
-      const saved = await res.json();
-      setCompanies(prev => [saved, ...prev]);
-      setIsFormOpen(false);
-      setSelectedCompany(saved);
-      setActiveTab('companies');
+        body: JSON.stringify(savedComp)
+      }).catch(() => {});
     } catch (err: any) {
       alert(`Falha ao registrar empresa: ${err.message}`);
     }
@@ -136,15 +176,17 @@ export default function App() {
   // Update Company
   const handleUpdateCompany = async (updatedComp: Company) => {
     try {
-      const res = await fetch(`/api/companies/${updatedComp.id}`, {
+      const updatedCompanies = companies.map(c => c.id === updatedComp.id ? updatedComp : c);
+      setCompanies(updatedCompanies);
+      setSelectedCompany(updatedComp);
+      saveLocalDatabase({ companies: updatedCompanies, contacts, transactions, customFields });
+
+      // Best effort backend sync
+      fetch(`/api/companies/${updatedComp.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(updatedComp)
-      });
-      if (!res.ok) throw new Error('Erro ao atualizar empresa.');
-      const saved = await res.json();
-      setCompanies(prev => prev.map(c => c.id === saved.id ? saved : c));
-      setSelectedCompany(saved);
+      }).catch(() => {});
     } catch (err: any) {
       alert(err.message);
     }
@@ -156,14 +198,21 @@ export default function App() {
     if (!confirm('Deseja realmente excluir esta empresa? Isso removerá permanentemente todos os contatos e ingressos dela.')) return;
 
     try {
-      const res = await fetch(`/api/companies/${id}`, { method: 'DELETE' });
-      if (!res.ok) throw new Error('Falha ao excluir empresa.');
-      setCompanies(prev => prev.filter(c => c.id !== id));
-      setContacts(prev => prev.filter(c => c.companyId !== id));
-      setTransactions(prev => prev.filter(t => t.companyId !== id));
+      const updatedCompanies = companies.filter(c => c.id !== id);
+      const updatedContacts = contacts.filter(c => c.companyId !== id);
+      const updatedTransactions = transactions.filter(t => t.companyId !== id);
+      
+      setCompanies(updatedCompanies);
+      setContacts(updatedContacts);
+      setTransactions(updatedTransactions);
+      saveLocalDatabase({ companies: updatedCompanies, contacts: updatedContacts, transactions: updatedTransactions, customFields });
+
       if (selectedCompany?.id === id) {
         setSelectedCompany(null);
       }
+
+      // Best effort backend sync
+      fetch(`/api/companies/${id}`, { method: 'DELETE' }).catch(() => {});
     } catch (err: any) {
       alert(err.message);
     }
@@ -172,14 +221,16 @@ export default function App() {
   // Create Contact
   const handleAddContact = async (contact: Contact) => {
     try {
-      const res = await fetch('/api/contacts', {
+      const savedContact = { ...contact, id: contact.id || `ct_${Date.now()}` };
+      const updatedContacts = [...contacts, savedContact];
+      setContacts(updatedContacts);
+      saveLocalDatabase({ companies, contacts: updatedContacts, transactions, customFields });
+
+      fetch('/api/contacts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(contact)
-      });
-      if (!res.ok) throw new Error('Falha ao registrar contato.');
-      const saved = await res.json();
-      setContacts(prev => [...prev, saved]);
+        body: JSON.stringify(savedContact)
+      }).catch(() => {});
     } catch (err: any) {
       alert(err.message);
     }
@@ -189,12 +240,15 @@ export default function App() {
   const handleDeleteContact = async (id: string) => {
     if (!confirm('Excluir este contato do sistema?')) return;
     try {
-      const res = await fetch(`/api/contacts/${id}`, { method: 'DELETE' });
-      if (!res.ok) throw new Error('Erro ao deletar contato.');
-      setContacts(prev => prev.filter(c => c.id !== id));
+      const updatedContacts = contacts.filter(c => c.id !== id);
+      setContacts(updatedContacts);
+      saveLocalDatabase({ companies, contacts: updatedContacts, transactions, customFields });
+
       if (selectedContactId === id) {
         setSelectedContactId(null);
       }
+
+      fetch(`/api/contacts/${id}`, { method: 'DELETE' }).catch(() => {});
     } catch (err: any) {
       alert(err.message);
     }
@@ -203,14 +257,15 @@ export default function App() {
   // Update Contact
   const handleUpdateContact = async (updatedContact: Contact) => {
     try {
-      const res = await fetch(`/api/contacts/${updatedContact.id}`, {
+      const updatedContacts = contacts.map(c => c.id === updatedContact.id ? updatedContact : c);
+      setContacts(updatedContacts);
+      saveLocalDatabase({ companies, contacts: updatedContacts, transactions, customFields });
+
+      fetch(`/api/contacts/${updatedContact.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(updatedContact)
-      });
-      if (!res.ok) throw new Error('Erro ao atualizar contato.');
-      const saved = await res.json();
-      setContacts(prev => prev.map(c => c.id === saved.id ? saved : c));
+      }).catch(() => {});
     } catch (err: any) {
       alert(err.message);
     }
@@ -219,14 +274,15 @@ export default function App() {
   // Create Custom Field Config
   const handleCreateCustomField = async (config: CustomFieldConfig) => {
     try {
-      const res = await fetch('/api/custom-fields', {
+      const updated = [...customFields, config];
+      setCustomFields(updated);
+      saveLocalDatabase({ companies, contacts, transactions, customFields: updated });
+
+      fetch('/api/custom-fields', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(config)
-      });
-      if (!res.ok) throw new Error('Erro ao registrar campo customizado.');
-      const saved = await res.json();
-      setCustomFields(prev => [...prev, saved]);
+      }).catch(() => {});
     } catch (err: any) {
       alert(err.message);
     }
@@ -236,30 +292,54 @@ export default function App() {
   const handleDeleteCustomField = async (id: string) => {
     if (!confirm('Deseja excluir este campo customizado? Todos os valores preenchidos em todas as fichas serão limpos permanentemente.')) return;
     try {
-      const res = await fetch(`/api/custom-fields/${id}`, { method: 'DELETE' });
-      if (!res.ok) throw new Error('Falha ao remover configuração.');
-      setCustomFields(prev => prev.filter(cf => cf.id !== id));
-      // Re-fetch database to get clean state values
-      fetchDB();
+      const updated = customFields.filter(cf => cf.id !== id);
+      setCustomFields(updated);
+      saveLocalDatabase({ companies, contacts, transactions, customFields: updated });
+
+      fetch(`/api/custom-fields/${id}`, { method: 'DELETE' }).catch(() => {});
     } catch (err: any) {
       alert(err.message);
     }
   };
 
+  // Clear Database (for fresh mailing import)
+  const handleClearAllData = () => {
+    clearLocalDatabase();
+    setCompanies([]);
+    setContacts([]);
+    setTransactions([]);
+    setCustomFields(DEFAULT_CUSTOM_FIELDS);
+    setSelectedCompany(null);
+    setSelectedContactId(null);
+    resetAnalysisRun();
+    setActiveTab('import-mailing');
+    fetch('/api/mailing/clear', { method: 'POST' }).catch(() => {});
+  };
+
   // Restore complete database backup
   const handleRestoreBackup = async (backupData: any): Promise<boolean> => {
     try {
-      const res = await fetch('/api/backup/restore', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(backupData)
-      });
-      if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.error || 'Erro ao restaurar backup.');
+      if (backupData && Array.isArray(backupData.companies)) {
+        setCompanies(backupData.companies || []);
+        setContacts(backupData.contacts || []);
+        setTransactions(backupData.transactions || []);
+        setCustomFields(backupData.customFields || DEFAULT_CUSTOM_FIELDS);
+        saveLocalDatabase({
+          companies: backupData.companies || [],
+          contacts: backupData.contacts || [],
+          transactions: backupData.transactions || [],
+          customFields: backupData.customFields || DEFAULT_CUSTOM_FIELDS
+        });
+        resetAnalysisRun();
+        
+        fetch('/api/backup/restore', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(backupData)
+        }).catch(() => {});
+        return true;
       }
-      await fetchDB();
-      return true;
+      return false;
     } catch (err: any) {
       alert(`Falha ao restaurar backup: ${err.message}`);
       return false;
@@ -668,20 +748,38 @@ export default function App() {
             {/* 4.5. MAILING IMPORTER VIEW */}
             {activeTab === 'import-mailing' && (
               <MailingImporter 
-                onImportComplete={() => {
-                  fetchDB();
+                onImportComplete={(importedData) => {
+                  if (importedData && importedData.companies) {
+                    setCompanies(importedData.companies);
+                    setContacts(importedData.contacts || []);
+                    setTransactions(importedData.transactions || []);
+                    setCustomFields(importedData.customFields || DEFAULT_CUSTOM_FIELDS);
+                  } else {
+                    fetchDB();
+                  }
                   resetAnalysisRun();
                   setActiveTab('dashboard');
                 }}
                 onLoadDemoData={async () => {
-                  const res = await fetch('/api/mailing/seed-default', { method: 'POST' });
-                  if (!res.ok) {
-                    const err = await res.json();
-                    throw new Error(err.error || 'Falha ao carregar mailing de exemplo.');
+                  try {
+                    const res = await fetch('/api/mailing/seed-default', { method: 'POST' });
+                    if (res.ok) {
+                      await fetchDB();
+                      resetAnalysisRun();
+                      return;
+                    }
+                  } catch (e) {
+                    console.log('Using client seed data');
                   }
-                  await fetchDB();
+                  const demo = getDemoData();
+                  setCompanies(demo.companies);
+                  setContacts(demo.contacts);
+                  setTransactions(demo.transactions);
+                  setCustomFields(demo.customFields || DEFAULT_CUSTOM_FIELDS);
+                  saveLocalDatabase(demo);
                   resetAnalysisRun();
                 }}
+                onClearAllData={handleClearAllData}
                 existingCompaniesCount={companies.length}
               />
             )}
