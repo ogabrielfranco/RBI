@@ -1,0 +1,8 @@
+{
+  "name": "RBI - CRM de Inteligencia Relacional",
+  "description": "Sistema de CRM robusto para gestão de clientes e empresas com cruzamento de dados, recomendações de vendas, parcerias, conexões de negócios e dashboard de métricas em tempo real.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

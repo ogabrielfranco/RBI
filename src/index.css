@@ -1,0 +1,89 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=Space+Grotesk:wght@400;500;600;700&display=swap');
+@import "tailwindcss";
+
+@variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Space Grotesk", sans-serif;
+}
+
+@media print {
+  /* Hide non-essential interactive controls */
+  .no-print,
+  header,
+  nav,
+  button,
+  .no-print-important,
+  iframe {
+    display: none !important;
+  }
+
+  /* Render form selectors and input fields as clean plain text instead of hiding them completely */
+  input,
+  select {
+    border: none !important;
+    background: transparent !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    appearance: none !important;
+    -webkit-appearance: none !important;
+    -moz-appearance: none !important;
+    font-weight: bold !important;
+    color: #0f172a !important; /* Tailwind slate-900 */
+    box-shadow: none !important;
+    pointer-events: none !important;
+  }
+
+  /* Force background colors and text colors to remain visible/correct */
+  body, html {
+    background: white !important;
+    color: black !important;
+    height: auto !important;
+    min-height: 100% !important;
+    overflow: visible !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  /* Allow the main root container and full app layouts to expand naturally */
+  #root, #main_app_layout, main {
+    height: auto !important;
+    min-height: 0 !important;
+    max-height: none !important;
+    overflow: visible !important;
+    position: static !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+
+  /* Expand any nested scrollable containers so all hidden content is printed */
+  .overflow-y-auto, 
+  .overflow-x-auto,
+  .overflow-auto,
+  [class*="overflow-y-"],
+  [class*="overflow-"] {
+    overflow: visible !important;
+    overflow-y: visible !important;
+    overflow-x: visible !important;
+    max-height: none !important;
+    height: auto !important;
+  }
+
+  /* Avoid cutting off cards, rows or grid items */
+  .break-inside-avoid,
+  section,
+  article,
+  tr,
+  blockquote,
+  .p-4,
+  .p-5,
+  .p-6,
+  .rounded-2xl,
+  .rounded-3xl {
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+  }
+}
